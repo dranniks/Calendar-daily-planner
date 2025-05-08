@@ -28,37 +28,17 @@ _start:
 
   ;;Читаем n в r9
   mov rsi, [rsp+16]
-  call str_number
-  mov r9, rax
+  mov r9, rsi
   
-  ;;Начинаем цикл
-  mov rbx, 1
- .loop:
-   inc rbx
-   cmp rbx, r9
-   jg .l2
-   mov rcx, 2
-   mov rax, rbx
-   xor rdx, rdx
-   div rcx
-   cmp rdx, 0
-   jne .loop
-   
-   mov rax, rbx
-   mov rsi, buffer
-   call number_str
-
-   mov rax, buffer
+   mov rax, r9
    call len_str
+
    mov rdx, rax
-   mov [buffer+rdx],0x0a
-   inc rdx
-   
    mov rax, 1
    mov rdi, r8
-   mov rsi, buffer
+   mov rsi, r9
    syscall
-   jmp .loop 
+
 
 .l2:  
   mov rdi, r8
