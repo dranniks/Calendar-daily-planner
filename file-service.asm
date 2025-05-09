@@ -1,10 +1,3 @@
-SYS_OPEN  = 2
-SYS_READ  = 0
-SYS_WRITE = 1
-SYS_CLOSE = 3
-SYS_EXIT  = 60
-STDOUT = 1
-
 ; input		rdi - file name
 ;			rsi - mode
 ; output	rax - file descriptor
@@ -58,5 +51,4 @@ output_buffer_in_console:
 
 
 section '.bss' writable
-	buffer rb 4096
 	msg db "I love FASM" , 0xa, 0
