@@ -1,49 +1,62 @@
-format elf64
-public _start
+SYS_OPEN  = 2
+SYS_READ  = 0
+SYS_WRITE = 1
+SYS_CLOSE = 3
+SYS_EXIT  = 60
+STDOUT = 1
 
-include 'func.asm'
+; input		rdi - file name
+;			rsi - mode
+; output	rax - file descriptor
+open_file:
+	mov rax, SYS_OPEN 
+  	mov rdx, 777o	; Права доступа (rwx для всех)
+  	syscall 
+	ret
+
+; input		rdi - file descriptor
+close_file:
+	mov rax, SYS_CLOSE
+	syscall
+	ret
+
+; input		rax - file descriptor
+;			rsi - string
+write_file:
+
+	mov r8, rax 	; Сохраняем файловый дескриптор
+	
+	mov r9, rsi		; Сохраняем сторку для записи в файл
+	
+	mov rax, r9
+	call len_str	; Получаем длинну строки и сохраняем в rax
+
+	mov rdx, rax
+	mov rax, SYS_WRITE
+	mov rdi, r8
+	mov rsi, r9
+	syscall
+	ret
+
+; input		rdi - file descriptor
+; output	buffer - text
+read_file:
+	mov rax, SYS_READ
+    mov rsi, buffer		; Буфер
+    mov rdx, 4096      	; Размер буфера
+    syscall
+	ret
+
+; input		buffer - text
+output_buffer_in_console:
+	mov rdx, 4096        ; Количество байт
+    mov rax, SYS_WRITE
+    mov rdi, STDOUT		; Вывод в консоль
+    mov rsi, buffer		; Данные
+    syscall
+	ret
+
 
 section '.bss' writable
-  
-  buffer rb 100
-
-section '.text' executable
-
-_start:
-  pop rcx 
-  cmp rcx, 1 
-  je .l1 
-
-  mov rdi,[rsp+8] 
-  mov rax, 2 
-  ;;Формируем O_WRONLY|O_TRUNC|O_CREAT
-  mov rsi, 577
-  mov rdx, 777o
-  syscall 
-  cmp rax, 0 
-  jl .l1 
-  
-  ;;Сохраняем файловый дескриптор
-  mov r8, rax
-
-  ;;Читаем n в r9
-  mov rsi, [rsp+16]
-  mov r9, rsi
-  
-   mov rax, r9
-   call len_str
-
-   mov rdx, rax
-   mov rax, 1
-   mov rdi, r8
-   mov rsi, r9
-   syscall
-
-
-.l2:  
-  mov rdi, r8
-  mov rax, 3
-  syscall
-
-.l1:
-  call exit
+	buffer rb 4096
+	msg db "I love FASM" , 0xa, 0
