@@ -1,349 +1,285 @@
-; sort.inc
-
-struc event_entry {
-    .ptr   dq ?
-    .len   dq ?
-    .year  dq ?
-    .month dq ?
-    .day   dq ?
-    .hour  dq ?
-    .minute dq ?
-}
+format ELF64
+public _start
 
 section '.text' executable
 
-;=======================================
-; Сортировка событий в файле
-;=======================================
-sort_events:
+_start:
+    ; Открытие файла (sys_open)
+    mov rax, 2
+    mov rdi, filename
+    xor rsi, rsi        ; O_RDONLY
+    syscall
+    cmp rax, 0
+    jl error
+    mov [fd], rax
+
+    ; Определение размера файла (sys_lseek)
+    mov rax, 8
+    mov rdi, [fd]
+    xor rsi, rsi        ; offset 0
+    mov rdx, 2          ; SEEK_END
+    syscall
+    mov [file_size], rax
+
+    ; Перемещение в начало файла
+    mov rax, 8
+    mov rdi, [fd]
+    xor rsi, rsi        ; offset 0
+    xor rdx, rdx        ; SEEK_SET
+    syscall
+
+    ; Выделение памяти (sys_brk)
+    mov rax, 12
+    mov rdi, 0
+    syscall
+    mov [heap_start], rax
+    add rax, [file_size]
+    inc rax
+    mov rdi, rax
+    mov rax, 12
+    syscall
+
+    ; Чтение файла (sys_read)
+    mov rax, 0
+    mov rdi, [fd]
+    mov rsi, [heap_start]
+    mov rdx, [file_size]
+    syscall
+
+    ; Закрытие файла (sys_close)
+    mov rax, 3
+    mov rdi, [fd]
+    syscall
+
+    ; Разделение на строки
+    mov rsi, [heap_start]
+    lea rdi, [array_ptr]
+    xor rcx, rcx
+    mov [rdi], rsi
+    inc rcx
+
+process_buffer:
+    cmp byte [rsi], 0
+    je done_split
+    cmp byte [rsi], 0x0A
+    jne next_char
+    mov byte [rsi], 0
+    inc rsi
+    mov [rdi + rcx*8], rsi
+    inc rcx
+    jmp process_buffer
+next_char:
+    inc rsi
+    jmp process_buffer
+
+done_split:
+    mov [num_lines], rcx
+
+    ; Сортировка пузырьком
+    mov rcx, [num_lines]
+    dec rcx
+    jbe print_lines
+
+outer_loop:
+    push rcx
+    lea rsi, [array_ptr]
+    xor rdx, rdx
+
+inner_loop:
+    mov rax, [rsi]
+    mov rbx, [rsi + 8]
+    mov rdi, rax
+    mov rsi_saved, rsi  ; Сохраняем rsi
+    mov rdi, rax
+    mov rsi, rbx
+    call compare_dates
+    mov rsi, rsi_saved  ; Восстанавливаем rsi
+    cmp rax, 1
+    jle no_swap
+    mov rax, [rsi]
+    mov rbx, [rsi + 8]
+    mov [rsi + 8], rax
+    mov [rsi], rbx
+    mov rdx, 1
+no_swap:
+    add rsi, 8
+    loop inner_loop
+
+    pop rcx
+    test rdx, rdx
+    jz print_lines
+    dec rcx
+    jnz outer_loop
+
+print_lines:
+    ; Вывод строк
+    mov rcx, [num_lines]
+    lea rsi, [array_ptr]
+
+print_loop:
+    test rcx, rcx
+    jz exit
+    mov rdi, [rsi]
+    call strlen
+    mov rdx, rax
+    mov rax, 1          ; sys_write
+    mov rdi, 1          ; stdout
+    mov rsi, [rsi]
+    syscall
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, newline
+    mov rdx, 1
+    syscall
+    add rsi, 8
+    dec rcx
+    jmp print_loop
+
+exit:
+    ; Завершение программы
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+error:
+    ; Обработка ошибки
+    mov rax, 1
+    mov rdi, 2
+    mov rsi, error_msg
+    mov rdx, error_len
+    syscall
+    mov rax, 60
+    mov rdi, 1
+    syscall
+
+compare_dates:
+    ; Сохраняем регистры
     push r12
     push r13
     push r14
     push r15
-    push rbx
     
-    ; 1. Чтение файла в буфер
-    mov rdi, db_filename
-    mov rsi, O_RDWR
-    call open_file
-    cmp rax, -1
-    je .error
-    mov r12, rax                 ; Сохраняем файловый дескриптор
+    mov r12, rdi  ; Первая строка
+    mov r13, rsi  ; Вторая строка
     
-    mov rdi, rax
-    mov rsi, buffer
-    mov rdx, 4096
-    call read_file
-    mov r13, rax                 ; Сохраняем размер файла
-    
-    ; 2. Разбиение на записи
-    call parse_entries
-    test rax, rax
-    jz .close_file
-    
-    ; 3. Сортировка записей
-    call qsort_events
-    
-    ; 4. Перезапись файла
-    mov rdi, buffer
-    mov rsi, temp_buffer
-    call rebuild_buffer
-    
-    mov rdi, r12
-    mov rsi, temp_buffer
-    mov rdx, r13
-    call write_file
-    mov rdi, r12
-    call close_file
-    
-    pop rbx
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    ret
-    
-.error:
-    mov rsi, sort_error_msg
-    mov rdx, sort_error_len
-    call print_message
-.close_file:
-    mov rdi, r12
-    call close_file
-    pop rbx
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    ret
+    ; Парсинг первой даты
+    lea rdi, [r12 + 1]
+    call parse_date
+    mov r14, rax  ; year1
+    mov r15, rbx  ; month1
+    mov r8, rcx   ; day1
+    mov r9, rdx   ; hour1
+    mov r10, rsi  ; minute1
 
-parse_entries:
-    ; Инициализация
-    mov rsi, buffer
-    lea rdi, [buffer + r13]
-    xor rcx, rcx                ; Счетчик записей
-    
-.parse_loop:
-    cmp rsi, rdi
-    jge .done
-    
-    ; Поиск новой строки
-    mov rdx, rsi
-.search_newline:
-    cmp byte [rdx], 0xA
-    je .found
-    inc rdx
-    cmp rdx, rdi
-    jl .search_newline
-    jmp .done
-    
-.found:
-    ; Сохраняем запись
-    mov r14, rsi                ; Начало строки
-    mov r15, rdx                ; Конец строки
-    
-    ; Создаем структуру entry
-    lea rax, [event_entries + rcx*56]
-    mov [rax + event_entry.ptr], r14
-    mov [rax + event_entry.len], r15
-    sub [rax + event_entry.len], r14
-    
-    ; Парсинг даты
-    call parse_datetime
-    test rax, rax
-    jz .invalid
-    
-    inc rcx
-    mov rsi, r15
-    inc rsi                     ; Пропускаем \n
-    jmp .parse_loop
-    
-.invalid:
-    ; Пропускаем битую запись
-    mov rsi, r15
-    inc rsi
-    jmp .parse_loop
-    
-.done:
-    mov [num_entries], rcx
-    mov rax, rcx
-    ret
+    ; Парсинг второй даты
+    lea rdi, [r13 + 1]
+    call parse_date
 
-parse_datetime:
-    ; R14 = начало строки
-    lea rbx, [r14 + 1]          ; Пропускаем '['
-    
-    ; Год (4 цифры)
-    mov rdi, rbx
-    call parse_number
-    mov [rax + event_entry.year], rdx
-    add rbx, 4
-    
-    ; Месяц (2 цифры)
-    inc rbx                     ; Пропускаем '-'
-    mov rdi, rbx
-    call parse_number
-    mov [rax + event_entry.month], rdx
-    add rbx, 2
-    
-    ; День (2 цифры)
-    inc rbx                     ; Пропускаем '-'
-    mov rdi, rbx
-    call parse_number
-    mov [rax + event_entry.day], rdx
-    add rbx, 2
-    
-    ; Час (2 цифры)
-    inc rbx                     ; Пропускаем ' '
-    mov rdi, rbx
-    call parse_number
-    mov [rax + event_entry.hour], rdx
-    add rbx, 2
-    
-    ; Минуты (2 цифры)
-    inc rbx                     ; Пропускаем ':'
-    mov rdi, rbx
-    call parse_number
-    mov [rax + event_entry.minute], rdx
-    
-    ret
-
-parse_number:
-    xor rdx, rdx
-    movzx rax, byte [rdi]
-    sub al, '0'
-    imul rdx, 10
-    add rdx, rax
-    movzx rax, byte [rdi+1]
-    sub al, '0'
-    imul rdx, 10
-    add rdx, rax
-    ret
-
-qsort_events:
-    ; Реализация быстрой сортировки
-    mov rcx, [num_entries]
-    dec rcx
-    jle .done
-    
-    mov rsi, event_entries      ; Массив
-    mov rdi, 0                  ; low
-    mov rdx, rcx                ; high
-    
-    call quicksort
-.done:
-    ret
-
-quicksort:
-    push rdi
-    push rdx
-    cmp rdi, rdx
-    jge .end
-    
-    call partition
-    mov rcx, rax
-    
-    mov rdx, rcx
-    dec rdx
-    call quicksort
-    
-    mov rdi, rcx
-    inc rdi
-    pop rdx
-    push rdx
-    call quicksort
-    
-.end:
-    pop rdx
-    pop rdi
-    ret
-
-partition:
-    mov rax, rdx
-    imul rax, 56
-    add rax, event_entries
-    mov r8, [rax + event_entry.year]
-    mov r9, [rax + event_entry.month]
-    mov r10, [rax + event_entry.day]
-    mov r11, [rax + event_entry.hour]
-    mov r12, [rax + event_entry.minute]
-    
-    mov r13, rdi
-    dec r13
-    
-    mov r14, rdi
-.loop:
-    cmp r14, rdx
-    jge .end_loop
-    
-    mov rax, r14
-    imul rax, 56
-    add rax, event_entries
-    
-    call compare_entry
-    cmp rax, -1
-    jne .no_swap
-    
-    inc r13
-    mov r15, r13
-    imul r15, 56
-    add r15, event_entries
-    
-    call swap_entries
-    
-.no_swap:
-    inc r14
-    jmp .loop
-.end_loop:
-    inc r13
-    mov r15, r13
-    imul r15, 56
-    add r15, event_entries
-    
-    mov rax, rdx
-    imul rax, 56
-    add rax, event_entries
-    
-    call swap_entries
-    
-    mov rax, r13
-    ret
-
-compare_entry:
-    ; Сравнение двух записей
-    mov rbx, [rax + event_entry.year]
-    cmp rbx, r8
+    ; Сравнение
+    cmp r14, rax
     jl .less
     jg .greater
-    
-    mov rbx, [rax + event_entry.month]
-    cmp rbx, r9
+    cmp r15, rbx
     jl .less
     jg .greater
-    
-    mov rbx, [rax + event_entry.day]
-    cmp rbx, r10
+    cmp r8, rcx
     jl .less
     jg .greater
-    
-    mov rbx, [rax + event_entry.hour]
-    cmp rbx, r11
+    cmp r9, rdx
     jl .less
     jg .greater
-    
-    mov rbx, [rax + event_entry.minute]
-    cmp rbx, r12
+    cmp r10, rsi
     jl .less
     jg .greater
-    
     xor rax, rax
-    ret
+    jmp .done
 .less:
     mov rax, -1
-    ret
+    jmp .done
 .greater:
     mov rax, 1
+.done:
+    ; Восстанавливаем регистры
+    pop r15
+    pop r14
+    pop r13
+    pop r12
     ret
 
-swap_entries:
-    ; Обмен записями
-    mov rcx, 14                 ; 56 bytes / 4 = 14 dwords
-.swap:
-    mov eax, [rax]
-    mov edx, [r15]
-    mov [r15], eax
-    mov [rax], edx
-    add rax, 4
-    add r15, 4
-    loop .swap
+parse_date:
+    ; Парсинг даты из rdi (64-битный вариант)
+    call atoi_4
+    push rax       ; year
+    add rdi, 5
+    call atoi_2
+    push rax       ; month
+    add rdi, 3
+    call atoi_2
+    push rax       ; day
+    add rdi, 3
+    call atoi_2
+    push rax       ; hour
+    add rdi, 3
+    call atoi_2
+    push rax       ; minute
+    
+    ; Извлекаем значения в 64-битные регистры
+    pop rsi        ; minute
+    pop rdx        ; hour
+    pop rcx        ; day
+    pop rbx        ; month
+    pop rax        ; year
     ret
 
-rebuild_buffer:
-    ; Сборка буфера из отсортированных записей
-    xor rcx, rcx
-    mov rsi, temp_buffer
+atoi_4:
+    ; Конвертация 4 символов (64-битная)
+    xor eax, eax
+    mov ecx, 4
 .loop:
-    cmp rcx, [num_entries]
-    jge .done
-    
-    mov rax, rcx
-    imul rax, 56
-    add rax, event_entries
-    
-    mov rdi, [rax + event_entry.ptr]
-    mov rdx, [rax + event_entry.len]
-    sub rdx, rdi
-    add rdx, 1                  ; Добавляем \n
-    
-    rep movsb
-    
-    inc rcx
+    imul rax, 10
+    movzx edx, byte [rdi]
+    sub edx, '0'
+    add rax, rdx
+    inc rdi
+    loop .loop
+    ret
+
+atoi_2:
+    ; Конвертация 2 символов (64-битная)
+    xor eax, eax
+    movzx edx, byte [rdi]
+    sub edx, '0'
+    imul rax, 10
+    add rax, rdx
+    inc rdi
+    movzx edx, byte [rdi]
+    sub edx, '0'
+    imul rax, 10
+    add rax, rdx
+    inc rdi
+    ret
+
+strlen:
+    ; Длина строки в rdi (64-битная)
+    xor rax, rax
+.loop:
+    cmp byte [rdi + rax], 0
+    je .done
+    inc rax
     jmp .loop
 .done:
     ret
 
 section '.data' writable
-    num_entries dq 0
-    event_entries rb 100*56     ; Максимум 100 событий
-    sort_error_msg db 'Error sorting events!', 0xA, 0
-    sort_error_len = $ - sort_error_msg
+
+filename db "events.txt",0
+error_msg db "Error!",0xA
+error_len = $ - error_msg
+newline db 0xA
+
+fd dq 0
+file_size dq 0
+heap_start dq 0
+array_ptr dq 100 dup(0)
+num_lines dq 0
+rsi_saved dq 0  ; Для временного хранения rsi

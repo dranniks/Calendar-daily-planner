@@ -5,12 +5,14 @@ public _start
 include 'sys-calls.asm'
 include 'file-service.asm'
 include 'str.asm'
+include 'export.asm'
 
 section '.text' executable
 ;=======================================
 ; Точка входа
 ;=======================================
 _start:
+    call check_registration
     call init_db_file
     main_loop:
         call show_menu
@@ -26,6 +28,100 @@ _start:
 ;=======================================
 ; Инициализация файла БД
 ;=======================================
+
+check_registration:
+    ; Открываем settings.txt для чтения
+    mov rax, SYS_OPEN
+    lea rdi, [settings_file]
+    mov rsi, O_RDONLY
+    xor rdx, rdx
+    syscall
+
+    cmp rax, 0
+    jl .register  ; Если файл не существует
+
+    mov [fd], rax ; Сохраняем дескриптор
+
+    ; Читаем первую строку
+    lea rsi, [reg_buffer]
+    mov rdx, 256
+    mov rax, SYS_READ
+    mov rdi, [fd]
+    syscall
+
+    ; Закрываем файл
+    mov rax, SYS_CLOSE
+    mov rdi, [fd]
+    syscall
+
+    test rax, rax
+    js .register  ; Если ошибка чтения
+
+    cmp byte [reg_buffer], 0
+    je .register  ; Если строка пустая
+
+    ; Выводим приветствие
+    lea rsi, [hello_msg]
+    mov rdx, hello_len
+    call print
+    lea rsi, [reg_buffer]
+    call print_str
+    ret
+
+.register:
+    ; Предлагаем регистрацию
+    lea rsi, [reg_msg]
+    mov rdx, reg_len
+    call print
+
+    ; Читаем имя пользователя
+    mov rax, SYS_READ
+    mov rdi, STDIN
+    lea rsi, [reg_buffer]
+    mov rdx, 256
+    syscall
+
+    ; Записываем имя в файл
+    mov rax, SYS_OPEN
+    lea rdi, [settings_file]
+    mov rsi, O_WRONLY or O_CREAT or O_TRUNC
+    mov rdx, 0644o
+    syscall
+    mov [fd], rax
+
+    lea rax, [reg_buffer]
+    call len_str
+    sub rax, 1
+    mov rdx, rax
+    mov rax, SYS_WRITE
+    mov rdi, [fd]
+    lea rsi, [reg_buffer]
+    syscall
+
+    mov rax, SYS_CLOSE
+    mov rdi, [fd]
+    syscall
+    
+    jmp check_registration
+
+; ========== Вспомогательные функции ==========
+print:
+    mov rax, SYS_WRITE
+    mov rdi, STDOUT
+    syscall
+    ret
+
+print_str:
+    mov rdx, 0
+.count:
+    cmp byte [rsi + rdx], 0
+    je .done
+    inc rdx
+    jmp .count
+.done:
+    call print
+    ret
+
 init_db_file:
     mov rdi, db_filename
     mov rsi, O_RDONLY
@@ -84,7 +180,10 @@ process_input:
     cmp al, '4'
     je show_events
     cmp al, '5'
+    je export_events
+    cmp al, '6'
     je exit_program
+
     
     mov rax, SYS_WRITE
     mov rdi, STDOUT
@@ -532,29 +631,35 @@ print_message:
 ; Показ всех событий
 ;=======================================
 show_events:
+    
 
-
-    ; Открываем файл для чтения
-    mov rdi, db_filename
-    mov rsi, O_RDONLY
-    call open_file
-    mov [db_fd], rax
-    
-    ; Читаем содержимое
-    mov rdi, rax
-    call read_file
-    
-    ; Выводим в консоль
-    call output_buffer_in_console
-    
-    ; Закрываем файл
-    mov rdi, [db_fd]
-    call close_file
-    
     ret
 
+.open_error:
+    mov rsi, open_error_msg
+    mov rdx, open_error_len
+    call print_message
+    ret
 
+.read_error:
+    mov rsi, read_error_msg
+    mov rdx, read_error_len
+    call print_message
+    ret
 
+export_events:
+    call process_file
+    ret
+
+;=======================================
+; Вывод буфера в консоль
+; Вход: RSI = буфер, RDX = размер
+;=======================================
+print_buffer:
+    mov rax, SYS_WRITE
+    mov rdi, STDOUT
+    syscall
+    ret
 ;=======================================
 ; Длина строки
 ; Вход: RAX = адрес строки
@@ -584,7 +689,8 @@ section '.data' writable
               db '2. Edit event', 10
               db '3. Delete event', 10
               db '4. View all events', 10
-              db '5. Exit', 10
+              db '5. Export events', 10
+              db '6. Exit', 10
               db 'Your choice: ', 0
     menu_len = $ - menu_text
     
@@ -686,6 +792,18 @@ section '.data' writable
     db_fd dq 0              ; File descriptor
     event_counter dd 0      ; Счетчик событий
     concat_buffer rb 256          ; Внутренний буфер для конкатенации строк
+
+
+
+    settings_file db "settings.txt",0
+    fd dq 0
+    hello_msg db 0xE2, 0x98, 0x95, " Hello, "
+    hello_len = $ - hello_msg
+
+    reg_msg db "Please register. Enter your name: ",0
+    reg_len = $ - reg_msg
+
+    reg_buffer rb 256
 
 section '.bss' writable
     buffer rb 4096
