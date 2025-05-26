@@ -1,8 +1,10 @@
 format elf64
 public _start
 
+
 include 'sys-calls.asm'
 include 'file-service.asm'
+include 'str.asm'
 
 section '.text' executable
 ;=======================================
@@ -95,6 +97,9 @@ process_input:
 ; Добавление события
 ;=======================================
 add_event:
+
+    call clear_buffers
+
     ; Запрос даты
     mov rax, SYS_WRITE
     mov rdi, STDOUT
@@ -137,74 +142,398 @@ add_event:
     mov rdx, 100
     syscall
     
-    ; Открываем файл для записи
+    
+    call clean_inputs
+    
+    ; Открываем файл
     mov rdi, db_filename
     mov rsi, O_WRONLY or O_APPEND
     call open_file
     mov [db_fd], rax
-    
+
     ; Формируем запись
-    mov rsi, event_record
-    mov byte [rsi], '['
-    inc rsi
-    
-    ; Копируем дату
-    mov rdi, rsi
+    ; 1. [дата
+    mov rdi, open_br
     mov rsi, date_buffer
-    call strcpy
+    call concat_strings
+
+    mov rdi, rax
+    mov rsi, space
+    call concat_strings
     
-    ; Добавляем разделитель
-    mov byte [rdi], ' '
-    inc rdi
-    
-    ; Копируем время
+    ; 2. [дата время
+    mov rdi, rax
     mov rsi, time_buffer
-    call strcpy
+    call concat_strings
     
-    ; Добавляем закрывающую скобку
-    mov byte [rdi], ']'
-    inc rdi
+    ; 3. [дата время] 
+    mov rdi, rax
+    mov rsi, close_br
+    call concat_strings
+
+    mov rdi, rax
+    mov rsi, space
+    call concat_strings
     
-    ; Добавляем описание
-    mov byte [rdi], ' '
-    inc rdi
+    ; 4. [дата время] описание
+    mov rdi, rax
     mov rsi, desc_buffer
-    call strcpy
+    call concat_strings
+
+    ; Копируем результат в event_record
+    mov rsi, rax
+    mov rdi, event_record
+    mov rcx, rdx
+    rep movsb
+
+    ; Добавляем перевод строки в конце
+    mov byte [rdi], 0xA
     
     ; Записываем в файл
     mov rax, [db_fd]
     mov rsi, event_record
+    lea rdx, [rcx+1]     ; Длина + перевод строки
     call write_file
-    
+
     ; Закрываем файл
     mov rdi, [db_fd]
     call close_file
     
     ret
 
+clear_buffers:
+    ; Очистка date_buffer
+    mov rdi, date_buffer
+    mov rcx, 11
+    call clear_buffer
+
+    ; Очистка time_buffer
+    mov rdi, time_buffer
+    mov rcx, 6
+    call clear_buffer
+
+    ; Очистка desc_buffer
+    mov rdi, desc_buffer
+    mov rcx, 100
+    call clear_buffer
+
+    mov rdi, event_record
+    mov rcx, 100
+    call clear_buffer
+    
+    mov rdi, concat_buffer
+    mov rcx, 100
+    call clear_buffer
+    ret
+
+clear_buffer:
+    ; Вход: RDI - адрес буфера, RCX - размер
+    xor al, al
+    rep stosb
+    ret
+
+clean_inputs:
+    ; Удаляем \n из date_buffer
+    mov rdi, date_buffer
+    call trim_newline
+    
+    ; Удаляем \n из time_buffer
+    mov rdi, time_buffer
+    call trim_newline
+    
+    ; Удаляем \n из desc_buffer
+    mov rdi, desc_buffer
+    call trim_newline
+    ret
+
+trim_newline:
+    ; Ищем \n в строке и заменяем на 0
+    mov rcx, 100
+    .loop:
+        cmp byte [rdi], 0xA
+        jne .next
+        mov byte [rdi], 0
+        ret
+    .next:
+        inc rdi
+        loop .loop
+        ret
+
+;=======================================
+; Редактирование события (исправленная версия)
+;=======================================
 edit_event:
-    mov rax, SYS_WRITE
-    mov rdi, STDOUT
-    mov rsi, edit_msg
-    mov rdx, edit_msg_len
-    syscall
+    call delete_event
+    call add_event
     ret
 
 ;=======================================
-; Удаление события (заглушка)
+; Удаление события (исправленная версия)
 ;=======================================
 delete_event:
+    push r12
+    push r13
+    push r14
+    push r15
+    push rbx
+
+    ; Шаг 1: Получение ввода
+    call clear_buffers
+    call get_delete_input
+    call clean_inputs
+
+    ; Шаг 2: Формирование паттерна поиска
+    mov rdi, open_br
+    mov rsi, date_buffer
+    call concat_strings        ; [дата
+    mov rdi, rax
+    mov rsi, space
+    call concat_strings        ; [дата 
+    mov rdi, rax
+    mov rsi, time_buffer
+    call concat_strings        ; [дата время
+    mov rdi, rax
+    mov rsi, close_br_space    ; "] "
+    call concat_strings        ; [дата время] 
+    mov r12, rax              ; Сохраняем паттерн
+    mov r13, rdx              ; Длина паттерна
+
+    ; Шаг 3: Чтение файла
+    mov rdi, db_filename
+    mov rsi, O_RDONLY
+    call open_file
+    cmp rax, -1
+    je .error
+    mov r14, rax              ; File descriptor
+
+    mov rdi, rax
+    mov rsi, buffer
+    mov rdx, 4096
+    call read_file
+    mov r15, rax              ; Размер файла
+    call close_file
+
+    ; Шаг 4: Поиск и удаление
+    mov rdi, buffer
+    mov rsi, r12
+    mov rdx, r13
+    mov rcx, r15
+    call remove_matching_lines
+    test rax, rax
+    jz .not_found
+
+    ; Шаг 5: Запись обновленного файла
+    mov rdi, db_filename
+    mov rsi, O_WRONLY or O_TRUNC
+    call open_file
+    cmp rax, -1
+    je .error
+    mov r14, rax
+
+    mov rdi, rax
+    mov rsi, buffer
+    mov rdx, r8               ; Новая длина
+    call write_file
+    call close_file
+
+    ; Успешное сообщение
+    mov rsi, success_delete
+    mov rdx, success_delete_len
+    call print_message
+    jmp .cleanup
+
+.not_found:
+    mov rsi, not_found_msg
+    mov rdx, not_found_len
+    call print_message
+    jmp .cleanup
+
+.error:
+    mov rsi, open_error_msg
+    mov rdx, open_error_len
+    call print_message
+
+.cleanup:
+    pop rbx
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    ret
+
+
+
+;=======================================
+; Вспомогательные функции
+;=======================================
+
+get_delete_input:
+    ; Запрос даты
     mov rax, SYS_WRITE
     mov rdi, STDOUT
-    mov rsi, delete_msg
-    mov rdx, delete_msg_len
+    lea rsi, [date_prompt]
+    mov rdx, date_prompt_len
+    syscall
+    
+    mov rax, SYS_READ
+    mov rdi, STDIN
+    lea rsi, [date_buffer]
+    mov rdx, 11
+    syscall
+    call trim_input
+    
+    ; Запрос времени
+    mov rax, SYS_WRITE
+    mov rdi, STDOUT
+    lea rsi, [time_prompt]
+    mov rdx, time_prompt_len
+    syscall
+    
+    mov rax, SYS_READ
+    mov rdi, STDIN
+    lea rsi, [time_buffer]
+    mov rdx, 6
+    syscall
+    call trim_input
+    ret
+
+trim_input:
+    dec rax
+    mov byte [rsi + rax], 0
+    ret
+
+open_read_file:
+    mov rax, SYS_OPEN
+    lea rdi, [db_filename]
+    mov rsi, O_RDONLY
+    syscall
+    ret
+
+read_entire_file:
+    mov rdi, r14
+    mov rax, SYS_READ
+    lea rsi, [buffer]
+    mov rdx, 4096
     syscall
     ret
 
 ;=======================================
-; Показать события
+; Удаление совпадающих строк
+; Вход: RDI=буфер, RSI=паттерн, RDX=длина паттерна, RCX=размер файла
+; Выход: RAX=1 (найдено), 0 (не найдено), R8=новая длина
+;=======================================
+remove_matching_lines:
+    xor r8, r8        ; Новый индекс
+    xor r9, r9        ; Текущий индекс
+    xor r10, r10      ; Флаг найденных совпадений
+    mov r11, rcx      ; Сохраняем исходный размер
+
+.loop:
+    cmp r9, r11
+    jge .done
+
+    ; Проверка на совпадение
+    mov rax, r9
+    add rax, rdx
+    cmp rax, r11
+    jg .copy_rest
+
+    push rdi
+    push rsi
+    push rcx
+    add rdi, r9
+    mov rcx, rdx
+    repe cmpsb
+    pop rcx
+    pop rsi
+    pop rdi
+    jne .copy_byte
+
+    ; Найдено совпадение
+    mov r10, 1
+    add r9, rdx
+
+    ; Ищем конец строки
+.find_eol:
+    cmp r9, r11
+    jge .adjust_size
+    cmp byte [rdi + r9], 0xA
+    je .found_eol
+    inc r9
+    jmp .find_eol
+
+.found_eol:
+    inc r9            ; Пропускаем \n
+    jmp .loop
+
+.copy_byte:
+    mov al, [rdi + r9]
+    mov [rdi + r8], al
+    inc r9
+    inc r8
+    jmp .loop
+
+.copy_rest:
+    cmp r9, r11
+    jge .done
+    mov al, [rdi + r9]
+    mov [rdi + r8], al
+    inc r9
+    inc r8
+    jmp .copy_rest
+
+.adjust_size:
+    mov r8, r9        ; Корректируем размер
+
+.done:
+    ; Очищаем оставшуюся часть буфера
+    mov rcx, 4096
+    sub rcx, r8
+    add rdi, r8
+    xor al, al
+    rep stosb
+
+    mov rax, r10
+    ret
+
+write_updated_file:
+    ; Открываем файл для записи
+    mov rax, SYS_OPEN
+    lea rdi, [db_filename]
+    mov rsi, O_WRONLY or O_TRUNC
+    mov rdx, 0644o
+    syscall
+    
+    ; Запись нового содержимого
+    mov rdi, rax
+    mov rax, SYS_WRITE
+    lea rsi, [buffer]
+    mov rdx, r8
+    syscall
+    
+    ; Закрываем файл
+    mov rax, SYS_CLOSE
+    syscall
+    ret
+
+print_message:
+    xor rdx, rdx
+.loop:
+    cmp byte [rsi + rdx], 0
+    je .done
+    inc rdx
+    jmp .loop
+.done:
+    mov rax, SYS_WRITE
+    mov rdi, STDOUT
+    syscall
+    ret
+;=======================================
+; Показ всех событий
 ;=======================================
 show_events:
+
+
     ; Открываем файл для чтения
     mov rdi, db_filename
     mov rsi, O_RDONLY
@@ -225,29 +554,6 @@ show_events:
     ret
 
 
-
-;=======================================
-; Копирование строки
-; Вход: RSI = источник, RDI = назначение
-; Выход: RAX = длина скопированной строки
-;=======================================
-strcpy:
-    push rdi
-    push rsi
-    xor rcx, rcx
-.copy_loop:
-    lodsb                   ; Загружаем байт из [rsi] в AL
-    test al, al             ; Проверяем на нуль-терминатор
-    jz .copy_done           ; Если 0 - завершаем
-    stosb                   ; Сохраняем AL в [rdi]
-    inc rcx                 ; Увеличиваем счетчик
-    jmp .copy_loop
-.copy_done:
-    mov byte [rdi], 0       ; Добавляем нуль-терминатор
-    mov rax, rcx            ; Возвращаем длину
-    pop rsi
-    pop rdi
-    ret
 
 ;=======================================
 ; Длина строки
@@ -294,7 +600,10 @@ section '.data' writable
     
     write_error_msg db 'Error writing to file!', 0xA, 0
     write_error_len = $ - write_error_msg
-    
+
+    buffer_overflow_msg db 'Error: Buffer overflow!', 0xA, 0
+    buffer_overflow_len = $ - buffer_overflow_msg
+
     ; Сообщения для функций
     add_msg db 10, '=== Add New Event ===', 10, 0
     add_msg_len = $ - add_msg
@@ -317,6 +626,22 @@ section '.data' writable
     
     desc_prompt db 'Enter description: ', 0
     desc_prompt_len = $ - desc_prompt
+
+    edit_date_prompt db 'Enter date to edit (YYYY-MM-DD): ',0
+    edit_date_prompt_len = $ - edit_date_prompt
+    
+    edit_time_prompt db 'Enter time to edit (HH:MM): ',0
+    edit_time_prompt_len = $ - edit_time_prompt
+    
+    new_date_prompt db 'Enter new date (YYYY-MM-DD): ',0
+    new_date_prompt_len = $ - new_date_prompt
+    
+    new_time_prompt db 'Enter new time (HH:MM): ',0
+    new_time_prompt_len = $ - new_time_prompt
+    
+    new_desc_prompt db 'Enter new description: ',0
+    new_desc_prompt_len = $ - new_desc_prompt
+
     
     ; Сообщения об успехе
     success_add db 10, 'Event added successfully!', 10, 10, 0
@@ -327,19 +652,43 @@ section '.data' writable
     
     success_delete db 10, 'Event deleted successfully!', 10, 10, 0
     success_delete_len = $ - success_delete
+    not_found_msg db 10,'Event not found!',10,10,0
+    not_found_len = $ - not_found_msg
     
-    ; Буферы для ввода
+    ; Буферы для создания события
     input_buffer rb 3       ; Для выбора меню (2 цифры + enter)
     num_buffer rb 5         ; Для ввода номеров событий
     date_buffer rb 11       ; YYYY-MM-DD + null
     time_buffer rb 6        ; HH:MM + null
     desc_buffer rb 100      ; Описание события
     event_record rb 150    ; Полная запись события
-    
+    open_br  db '[', 0
+    close_br db ']', 0
+    space db ' ', 0
+    temp_str db '', 0
+
+    close_br_space db '] ',0
+
+    new_date_buffer rb 11
+    new_time_buffer rb 6
+    new_desc_buffer rb 100
+    new_file_size rq 1
+    file_size dq 0
+
+    debug_pos_msg db 'DEBUG: Position=',0
+    debug_pos_len = $ - debug_pos_msg
+    debug_size_msg db ' DEBUG: Size=',0
+    debug_size_len = $ - debug_size_msg
+    new_line db 0xA,0
+
     ; Технические переменные
     db_filename db "events.txt", 0
     db_fd dq 0              ; File descriptor
     event_counter dd 0      ; Счетчик событий
+    concat_buffer rb 256          ; Внутренний буфер для конкатенации строк
 
 section '.bss' writable
     buffer rb 4096
+    temp_buffer rb 8192       ; Увеличенный буфер
+    position_buffer rb 16     ; Для отладочного вывода
+    temp_buffer_size equ 16384  ; 16KB буфер

@@ -6,6 +6,9 @@ SYS_CLOSE     = 3
 SYS_EXIT      = 60
 SYS_FORK      = 57
 SYS_WAIT4     = 61
+SYS_LSEEK     = 8
+SYS_FTRUNCATE = 77
+SYS_UNLINK = 87
 
 ; Флаги для open()
 O_RDONLY      = 0      ; Только чтение
