@@ -1,15 +1,8 @@
 format elf64
 public _start
 
-
-include 'sys-calls.asm'
-include 'file-service.asm'
-include 'str.asm'
-
 section '.text' executable
-;=======================================
-; Точка входа
-;=======================================
+
 _start:
     call clear_screen
 
@@ -29,7 +22,7 @@ _start:
         syscall
 
 ;=======================================
-; Инициализация файла БД
+; Инициализация файла 
 ;=======================================
 
 check_registration:
@@ -156,6 +149,7 @@ show_menu:
     mov rsi, menu_text
     mov rdx, menu_len
     syscall
+    mov rbx, 1
     ret
 
 ;=======================================
@@ -367,7 +361,10 @@ trim_newline:
 ;=======================================
 edit_event:
     call delete_event
-    call add_event
+    cmp rbx, 0             ; Проверяем флаг успешного удаления
+    je .skip_add           ; Если удаление не удалось (rbx=0), пропускаем добавление
+    call add_event         ; Добавляем новое событие
+.skip_add:
     ret
 
 ;=======================================
@@ -378,14 +375,14 @@ delete_event:
     push r13
     push r14
     push r15
-    push rbx
+    
 
-    ; Шаг 1: Получение ввода
+    ; Получение ввода
     call clear_buffers
     call get_delete_input
     call clean_inputs
 
-    ; Шаг 2: Формирование паттерна поиска
+    ; Формирование паттерна поиска
     mov rdi, open_br
     mov rsi, date_buffer
     call concat_strings        ; [дата
@@ -401,7 +398,7 @@ delete_event:
     mov r12, rax              ; Сохраняем паттерн
     mov r13, rdx              ; Длина паттерна
 
-    ; Шаг 3: Чтение файла
+    ; Чтение файла
     mov rdi, db_filename
     mov rsi, O_RDONLY
     call open_file
@@ -416,7 +413,7 @@ delete_event:
     mov r15, rax              ; Размер файла
     call close_file
 
-    ; Шаг 4: Поиск и удаление
+    ; Поиск и удаление
     mov rdi, buffer
     mov rsi, r12
     mov rdx, r13
@@ -425,7 +422,7 @@ delete_event:
     test rax, rax
     jz .not_found
 
-    ; Шаг 5: Запись обновленного файла
+    ; Запись обновленного файла
     mov rdi, db_filename
     mov rsi, O_WRONLY or O_TRUNC
     call open_file
@@ -445,6 +442,7 @@ delete_event:
     mov rsi, not_found_msg
     mov rdx, not_found_len
     call print_message
+    xor rbx, rbx
     jmp .cleanup
 
 .error:
@@ -453,7 +451,7 @@ delete_event:
     call print_message
 
 .cleanup:
-    pop rbx
+    
     pop r15
     pop r14
     pop r13
@@ -826,6 +824,126 @@ len_str:
     pop rdi
     ret
 
+; Аргументы:
+; rdi - указатель на первую строку (нуль-терминированную)
+; rsi - указатель на вторую строку (нуль-терминированную)
+
+; Возвращает:
+; rax - указатель на результат (buffer)
+; rdx - общая длина строки (без нуль-терминатора)
+concat_strings:
+    push rbx
+    push r12
+    push rdi
+    push rsi
+
+    ; Сохраняем исходные указатели
+    mov rbx, rdi      ; Первая строка
+    mov r12, rsi      ; Вторая строка
+
+    ; Вычисляем длину первой строки
+    call strlen
+    mov r8, rax       ; r8 = длина первой строки
+
+    ; Вычисляем длину второй строки
+    mov rdi, r12
+    call strlen
+    mov r9, rax       ; r9 = длина второй строки
+
+    ; Проверка переполнения буфера
+    mov rcx, r8
+    add rcx, r9
+    cmp rcx, 255
+    jbe .copy_data
+
+    ; Если переполнение - обрезаем до максимального размера
+    mov r8, 255
+    sub r8, r9
+    jns .copy_data
+    xor r8, r8        ; Если даже одна строка длиннее 255
+
+.copy_data:
+    lea rdi, [concat_buffer] ; Начало буфера
+    mov rsi, rbx      ; Копируем первую строку
+    mov rcx, r8
+    rep movsb
+
+    mov rsi, r12      ; Копируем вторую строку
+    mov rcx, r9
+    rep movsb
+
+    ; Устанавливаем возвращаемые значения
+    lea rax, [concat_buffer]
+    mov rdx, r8
+    add rdx, r9
+
+    pop rsi
+    pop rdi
+    pop r12
+    pop rbx
+    ret
+
+strlen:
+    xor rcx, rcx
+    not rcx
+    xor al, al
+    repne scasb
+    not rcx
+    dec rcx
+    mov rax, rcx
+    ret
+
+; input		rdi - file name
+;			rsi - mode
+; output	rax - file descriptor
+open_file:
+	mov rax, SYS_OPEN 
+  	mov rdx, 777o	; Права доступа (rwx для всех)
+  	syscall 
+	ret
+
+; input		rdi - file descriptor
+close_file:
+	mov rax, SYS_CLOSE
+	syscall
+	ret
+
+; input		rax - file descriptor
+;			rsi - string
+write_file:
+
+	mov r8, rax 	; Сохраняем файловый дескриптор
+	
+	mov r9, rsi		; Сохраняем сторку для записи в файл
+	
+	mov rax, r9
+	call len_str	; Получаем длинну строки и сохраняем в rax
+
+	mov rdx, rax
+	mov rax, SYS_WRITE
+	mov rdi, r8
+	mov rsi, r9
+	syscall
+	ret
+
+; input		rdi - file descriptor
+; output	buffer - text
+read_file:
+	mov rax, SYS_READ
+    mov rsi, buffer		; Буфер
+    mov rdx, 4096      	; Размер буфера
+    syscall
+	ret
+
+; input		buffer - text
+output_buffer_in_console:
+	mov rdx, 4096        ; Количество байт
+    mov rax, SYS_WRITE
+    mov rdi, STDOUT		; Вывод в консоль
+    mov rsi, buffer		; Данные
+    syscall
+	ret
+
 ;=======================================
 ; Данные программы
 ;=======================================
@@ -965,6 +1083,45 @@ section '.data' writable
     event_fd       dq 0
     export_fd      dq 0
     exp_buffer         db 0
+
+    ; Системные вызовы Linux x86_64
+    SYS_READ      = 0
+    SYS_WRITE     = 1
+    SYS_OPEN      = 2
+    SYS_CLOSE     = 3
+    SYS_EXIT      = 60
+    SYS_FORK      = 57
+    SYS_WAIT4     = 61
+    SYS_LSEEK     = 8
+    SYS_FTRUNCATE = 77
+    SYS_UNLINK = 87
+
+    ; Флаги для open()
+    O_RDONLY      = 0      ; Только чтение
+    O_WRONLY      = 1      ; Только запись
+    O_RDWR        = 2      ; Чтение и запись
+    O_CREAT       = 64     ; Создать если не существует
+    O_APPEND      = 1024   ; Добавление в конец файла
+    O_TRUNC       = 512    ; Очистить файл при открытии
+
+    ; Стандартные файловые дескрипторы
+    STDIN         = 0      ; Стандартный ввод
+    STDOUT        = 1      ; Стандартный вывод
+    STDERR        = 2      ; Стандартный вывод ошибок
+
+    ; Права доступа к файлу (mode)
+    S_IRWXU       = 0700o  ; rwx для владельца
+    S_IRUSR       = 0400o  ; read для владельца
+    S_IWUSR       = 0200o  ; write для владельца
+    S_IXUSR       = 0100o  ; execute для владельца
+    S_IRWXG       = 0070o  ; rwx для группы
+    S_IRGRP       = 0040o  ; read для группы
+    S_IWGRP       = 0020o  ; write для группы
+    S_IXGRP       = 0010o  ; execute для группы
+    S_IRWXO       = 0007o  ; rwx для других
+    S_IROTH       = 0004o  ; read для других
+    S_IWOTH       = 0002o  ; write для других
+    S_IXOTH       = 0001o  ; execute для других
 
 section '.bss' writable
     buffer rb 4096
