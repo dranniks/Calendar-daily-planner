@@ -5,15 +5,17 @@ public _start
 include 'sys-calls.asm'
 include 'file-service.asm'
 include 'str.asm'
-include 'export.asm'
 
 section '.text' executable
 ;=======================================
 ; Точка входа
 ;=======================================
 _start:
+    call clear_screen
+
     call check_registration
     call init_db_file
+
     main_loop:
         call show_menu
         call read_input
@@ -21,6 +23,7 @@ _start:
         jmp main_loop
 
     exit_program:
+        call clear_screen
         mov rax, SYS_EXIT
         xor rdi, rdi
         syscall
@@ -297,7 +300,8 @@ add_event:
     ; Закрываем файл
     mov rdi, [db_fd]
     call close_file
-    
+
+    call clear_screen
     ret
 
 clear_buffers:
@@ -359,7 +363,7 @@ trim_newline:
         ret
 
 ;=======================================
-; Редактирование события (исправленная версия)
+; Редактирование события
 ;=======================================
 edit_event:
     call delete_event
@@ -367,7 +371,7 @@ edit_event:
     ret
 
 ;=======================================
-; Удаление события (исправленная версия)
+; Удаление события
 ;=======================================
 delete_event:
     push r12
@@ -435,10 +439,6 @@ delete_event:
     call write_file
     call close_file
 
-    ; Успешное сообщение
-    mov rsi, success_delete
-    mov rdx, success_delete_len
-    call print_message
     jmp .cleanup
 
 .not_found:
@@ -458,10 +458,20 @@ delete_event:
     pop r14
     pop r13
     pop r12
+    call clear_screen
     ret
 
 
-
+; ============================================
+; Очистка консоли
+; ============================================
+clear_screen:
+    mov rax, 1           ; sys_write
+    mov rdi, 1           ; stdout
+    lea rsi, [clear_seq]
+    mov rdx, clear_len
+    syscall
+    ret
 ;=======================================
 ; Вспомогательные функции
 ;=======================================
@@ -631,26 +641,163 @@ print_message:
 ; Показ всех событий
 ;=======================================
 show_events:
-    
+    call clear_screen
+    push rdi
+    push rsi
+    push rbx
 
-    ret
+    ; Открываем файл events.txt для чтения
+    lea rdi, [db_filename]  ; Указатель на имя файла
+    mov rsi, O_RDONLY       ; Режим чтения
+    call open_file
+    cmp rax, 0              ; Проверка на ошибку
+    jl .error
 
-.open_error:
-    mov rsi, open_error_msg
-    mov rdx, open_error_len
-    call print_message
-    ret
+    ; Сохраняем дескриптор файла
+    mov rbx, rax
 
-.read_error:
-    mov rsi, read_error_msg
-    mov rdx, read_error_len
-    call print_message
+    ; Читаем содержимое файла
+    mov rdi, rax
+    call read_file
+
+    ; Закрываем файл
+    mov rdi, rbx
+    call close_file
+
+    ; Выводим содержимое буфера в консоль
+    call output_buffer_in_console
+
+    jmp .exit
+
+.error:
+    ; Дополнительная обработка ошибок при необходимости
+
+.exit:
+    pop rbx
+    pop rsi
+    pop rdi
     ret
 
 export_events:
-    call process_file
-    ret
+    ; Открытие файлов
+    mov  rax, SYS_OPEN
+    lea  rdi, [event_filename]
+    mov  rsi, O_RDONLY
+    xor  rdx, rdx
+    syscall
+    cmp  rax, 0
+    jl   exp_exit_error
+    mov  [event_fd], rax
 
+    mov  rax, SYS_OPEN
+    lea  rdi, [export_filename]
+    mov  rsi, O_WRONLY or O_CREAT or O_TRUNC
+    mov  rdx, 0644o
+    syscall
+    cmp  rax, 0
+    jl   exp_exit_error
+    mov  [export_fd], rax
+
+    mov  rax, SYS_WRITE
+    mov  rdi, [export_fd]
+    lea  rsi, [head]
+    mov  rdx, 38
+    syscall
+
+.read_loop:
+    ; Чтение символа
+    mov  rax, SYS_READ
+    mov  rdi, [event_fd]
+    lea  rsi, [exp_buffer]
+    mov  rdx, 1
+    syscall
+
+    cmp  rax, 1
+    jne  .close_files
+
+    ; Проверка специальных символов
+    cmp  byte [exp_buffer], 0x0A  ; '\n'
+    je   .print_1
+    cmp  byte [exp_buffer], 0x5D  ; ']'
+    je   .print_2
+    cmp  byte [exp_buffer], 0x5B  ; '['
+    je   .print_3
+
+.write_char:
+    ; Запись символа в файл
+    mov  rax, SYS_WRITE
+    mov  rdi, [export_fd]
+    lea  rsi, [exp_buffer]
+    mov  rdx, 1
+    syscall
+    jmp  .read_loop
+
+.print_1:
+    ; Запись символа в файл
+    mov  rax, SYS_WRITE
+    mov  rdi, [export_fd]
+    lea  rsi, [exp_buffer]
+    mov  rdx, 1
+    syscall
+
+    mov  rax, SYS_WRITE
+    mov  rdi, [export_fd]
+    lea  rsi, [l_line]
+    mov  rdx, 43
+    syscall
+    
+    jmp  .read_loop
+
+.print_2:
+    ; Запись символа в файл
+    mov  rax, SYS_WRITE
+    mov  rdi, [export_fd]
+    lea  rsi, [exp_buffer]
+    mov  rdx, 1
+    syscall
+
+    mov  rax, SYS_WRITE
+    mov  rdi, [export_fd]
+    lea  rsi, [n_line]
+    mov  rdx, 3
+    syscall
+    
+    jmp  .read_loop
+
+.print_3:
+
+    mov  rax, SYS_WRITE
+    mov  rdi, [export_fd]
+    lea  rsi, [h_line]
+    mov  rdx, 44
+    syscall
+
+    ; Запись символа в файл
+    mov  rax, SYS_WRITE
+    mov  rdi, [export_fd]
+    lea  rsi, [exp_buffer]
+    mov  rdx, 1
+    syscall
+
+
+
+    jmp  .read_loop
+
+.close_files:
+    ; Закрытие файлов
+    mov  rax, SYS_CLOSE
+    mov  rdi, [event_fd]
+    syscall
+    mov  rax, SYS_CLOSE
+    mov  rdi, [export_fd]
+    syscall
+    call clear_screen
+    ret
+    
+exp_exit_error:
+    mov  rax, SYS_EXIT
+    mov  rdi, 1
+    syscall
 ;=======================================
 ; Вывод буфера в консоль
 ; Вход: RSI = буфер, RDX = размер
@@ -804,6 +951,20 @@ section '.data' writable
     reg_len = $ - reg_msg
 
     reg_buffer rb 256
+
+    clear_seq db 0x1B, '[2J', 0x1B, '[H'  ; Escape-последовательность
+    clear_len = $ - clear_seq              ; Длина последовательности
+
+    event_filename db "events.txt",0
+    export_filename db "export.txt",0
+    smile db 0xF0,0x9F,0x98,0x8A
+    head db "======Your Events", 0xF0,0x9F,0x98,0x8A, "======         ", 0x0A, 0x0A
+    l_line            db "-----------------------------------------", 0x0A, 0x0A
+    n_line           db 0x0A, "|", 0x09
+    h_line         db "-----------------------------------------", 0x0A, "|", 0x09
+    event_fd       dq 0
+    export_fd      dq 0
+    exp_buffer         db 0
 
 section '.bss' writable
     buffer rb 4096
